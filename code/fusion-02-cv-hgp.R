@@ -5,7 +5,7 @@ if (!interactive())
 library(parallel)
 library(rstan)
 
-source("code/utils/cv-task-funs.R")
+source("utils/cv-task-funs.R")
 
 ##---+ Configuration ----
 ## Define all parameters here instead of in the bash script

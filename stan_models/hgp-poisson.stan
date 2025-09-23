@@ -13,7 +13,6 @@ data {
   matrix[N, k] X;
   real<lower=0, upper=1> prob_rho;
   real<lower=0> rho_0;
-  real aux_res;
   real<lower = 0, upper = 1> nu;
 }
 transformed data {

@@ -14,7 +14,6 @@ data{
   matrix[N, k2] A;
   matrix[Np, k2] Ap;
   real<lower=0, upper=1> nu;
-  int<lower = 0, upper = 1> ln;
 }
 parameters {
   vector[k] beta;
@@ -47,17 +46,11 @@ generated quantities {// log likelihood & fitted
                       mu_p);
     vector[Np] lmu = exp(Xp * beta + z_p);
     for (i in 1:Np) {
-      if (ln) {
-        real mu_ln;
-        real sigma_ln;
-        sigma_ln = sqrt(log1p(tau * inv_square(lmu[i])));
-        mu_ln = log(square(lmu[i]) * inv_sqrt(square(lmu[i]) + tau));
-        y_rep[i] = lognormal_rng(mu_ln, sigma_ln);
-      } else {
-        real gamma_beta;
-        gamma_beta = tau / lmu[i];
-        y_rep[i] = gamma_rng(tau, gamma_beta);
-      }
+      real mu_ln;
+      real sigma_ln;
+      sigma_ln = sqrt(log1p(tau * inv_square(lmu[i])));
+      mu_ln = log(square(lmu[i]) * inv_sqrt(square(lmu[i]) + tau));
+      y_rep[i] = lognormal_rng(mu_ln, sigma_ln);
     }
   }
 }

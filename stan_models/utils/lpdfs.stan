@@ -1,20 +1,4 @@
 /**
- * Gamma lpdf reparametrized (taken from drmr)
- *
- * Reference: https://doi.org/10.1111/jtsa.12242
- * 
- * @param x non-negative random variable
- * @param mu theoretical mean of X
- * @param phi inverse scale parameter.
- * 
- * @return a log-pdf
- */
-real gamma_mu_lpdf(real x, real mu, real phi) {
-  return - lgamma(phi) + lmultiply(phi, phi) - lmultiply(phi, mu) +
-    lmultiply(phi - 1, x) - phi * x * inv(mu);
-}
-
-/**
  * Log-Normal lpdf reparametrized (taken from drmr)
  *
  * Reference: https://doi.org/10.1111/jtsa.12242

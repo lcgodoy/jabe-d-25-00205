@@ -3,6 +3,13 @@ library(s2)
 library(ggplot2)
 library(dplyr)
 
+theme_set(theme_bw() +
+          theme(strip.background = element_rect(fill = "white")))
+
+gr <- (1 + sqrt(5)) / 2
+
+fig_dir <- "~/git-projects/hausdorff-GP/img"
+
 ## functions for calculating Hausdorff distance on the sphere
 Rcpp::sourceCpp("src/haus-dist.cpp")
 
@@ -29,11 +36,17 @@ b <- st_buffer(st_as_sfc("POINT(-30 52)", crs = 'EPSG:4326'),
 ## visualizing
 i <- st_intersection(b, my_grid)
 i2 <- st_intersection(b, my_pts)
+pdf(file.path(fig_dir, "sphere-sim.pdf"),
+    width = 4,
+    height = 3)
+par(mar = c(0, 0, 0, 0))
 plot(st_transform(i, "+proj=ortho +lat_0=52 +lon_0=-30"),
-     col = "steelblue")
+     col = "lightblue")
 plot(st_transform(i2, "+proj=ortho +lat_0=52 +lon_0=-30"),
      col = "red",
-     add = TRUE, pch = 19)
+     add = TRUE, pch = 19, size = 5)
+dev.off()
+
 
 ##--- grid to list (easier to work on Rcpp) ----
 

@@ -3,17 +3,23 @@ library(rstan)
 library(ggplot2)
 library(bayesplot)
 library(INLA)
+library(sp)
+library(dplyr)
 
 set.seed(2024)
 
 theme_map <- theme_minimal() +
   theme(axis.text = element_blank(),
         strip.background = element_rect(color = 1))
+
+theme_set(theme_bw() +
+          theme(strip.background = element_rect(fill = "white")))
+
 gr <- (1 + sqrt(5)) / 2
 
-##--- auxiliary functions ----
+fig_dir <- "~/git-projects/hausdorff-GP/img"
 
-source("code/utils/process-chains.R")
+##--- auxiliary functions ----
 
 int_score <- function(y, l, u, alpha) {
   alpha <- 2 / alpha
@@ -24,9 +30,7 @@ int_score <- function(y, l, u, alpha) {
 
 ##--- reading and pre-processing data ----
 
-crs_epsg <- c(4326, 3310, 4269,
-              2229, 2874, 3498,
-              26911)[7]#[5]
+crs_epsg <- 26911
 
 my_dt <- readRDS("data/pm25/dataset.rds")
 border_poly <- readRDS("data/pm25/border_counties.rds")
@@ -49,7 +53,7 @@ ggplot(data = dplyr::arrange(my_dt, id),
         legend.text = element_text(size = 8),
         legend.title = element_text(size = 10))
 
-ggsave(filename = "img/pm25_data.pdf",
+ggsave(filename = file.path(fig_dir, "pm25_data.pdf"),
        width = 3.5,
        height = 3.5)
 
@@ -78,21 +82,6 @@ A <- cbind(1, areas_bin)
 
 ##--- regions for predictions ----
 
-## shoud be greater than 1 to predict at a finer grid
-## and smaller than 1 to predicet at at more coarse grid
-## mf <- 4 ## .5
-
-## pred_regions <- st_sample(x = border_poly,
-##                           size = sum(areas_bin) * mf,
-##                           type = "regular") |>
-##   st_set_crs(crs_epsg)
-
-## pred_regions <- st_sf(pred_regions) |>
-##   transform(id = seq_len(NROW(pred_regions)))
-
-## pred_regions <- stars::st_rasterize(pred_regions)[border_poly, ]
-
-## pred_regions <- st_as_sf(pred_regions)
 pred_regions <- readRDS("data/pm25/pred-locations.rds")
 
 pred_dists <- pred_regions |>
@@ -126,119 +115,120 @@ A_new <- cbind(1, areas_bin_new)
 
 ##---+ HGP +----
 
-## smoothness
-nu <- .8
+nu <- .7
 
 hgp_dat <- list(
     N = N,
     k = NCOL(x),
     k2 = ncol(A),
     dists = dists,
-    bp = hd_lim[2] * .8,
+    rho_0 = hd_lim[2] * .8,
     tau_0 = sd(my_dt$pm25) / 2,
     pt_u = .05,
-    prob_rho = .01,
+    prob_rho = .05,
     y = my_dt$pm25,
     X = x,
-    A = A,
-    nu = nu,
-    N_new = NROW(A_new),
-    X_new = matrix(rep(1, pred_n), ncol = 1),
-    A_new = A_new,
-    dists_new = pred_dists,
-    dists_cross = cross_dists
+    A = A
 )
 
 ##----+ Compiling models +---
 
-code_hgp <- stan_model(
-    file =
-      "code/fusion/stan_models/hgp-final-efficient.stan",
-    allow_optimizations = TRUE
-)
+code_hgp <- stan_model(file = "stan_models/hgp-gaussian.stan")
 
 ##----+ Sampling +---
 
-n_iter <- 4000L
-burn <- 2000L
+n_iter <- 1000L
+burn <- 1000L
 thin <- 1
+
+nus <- seq(from = .6, to = .9, by = .1)
 
 pars_hgp <- c("beta", "rho", "alpha", "tau")
 
-fit_hgp <- sampling(
-    object = code_hgp,
-    data = hgp_dat,
-    iter = n_iter,
-    warmup = burn,
-    thin = thin,
-    chains = 4,
-    cores = 4,
-    pars = c("chol_sig", "mu_new", "sigma_new",
-             "sigma_op", "z", "Sigma",
-             "sigmas", "sigmas_new",
-             "prec", "gi"),
-    include = FALSE,
-    save_warmup = FALSE,
-    ## control = list(adapt_delta = .6),
-    ## control = list(max_treedepth = 15),
-    seed = 2024
-)
+all_hgps <-
+  lapply(nus, \(x) {
+    hgp_dat$nu <- x
+    sampling(
+        object = code_hgp,
+        data = hgp_dat,
+        iter = n_iter + burn,
+        warmup = burn,
+        thin = thin,
+        chains = 4,
+        cores = 4,
+        save_warmup = FALSE,
+        seed = 2024
+    )})
+
+##---+ Goodness-of-fit +----
+
+stan_ll <-
+  stan_model(file = "stan_models/gaussian-gq.stan")
+
+all_gof <-
+  Map(\(fit, .nu) {
+    hgp_dat$nu <- .nu
+    gqs(stan_ll,
+        data = hgp_dat,
+        draws = as.matrix(fit,
+                          pars = pars_hgp))
+  }, fit = all_hgps, .nu = nus)
+
+gofs <-
+  Map(\(fit, .nu) {
+    loo_hgp <- loo::loo(fit,
+                        save_psis = TRUE,
+                        cores = 8)
+    ll_hgp <- loo::extract_log_lik(fit)
+    waic_hgp <- loo::waic(ll_hgp)
+    c("nu" = .nu,
+      "LOOIC" = loo_hgp$estimates[3, 1],
+      "WAIC" = waic_hgp$estimates[3, 1])
+  }, fit = all_gof,
+  .nu = nus)
+
+##--- Table S.5 ----
+
+do.call(rbind, gofs) |>
+  t() |>
+  knitr::kable(format = "latex",
+               booktabs = TRUE,
+               linesep = "",
+               digits = 1)
+
+best_model <- which.min(sapply(gofs, \(x) x[2]))
+fit_hgp <- all_hgps[[best_model]]
 
 print(fit_hgp, pars = pars_hgp)
 
 pairs(fit_hgp, pars = pars_hgp)
-
-stan_trace(fit_hgp, pars = pars_hgp)
 
 rhat(fit_hgp, pars = pars_hgp) |>
   max()
 
 color_scheme_set("mix-blue-red")
 
-extract(fit_hgp, pars = pars_hgp,
-        permuted = FALSE) |>
-  mcmc_trace(x = _,
-             regex_pars = pars_hgp,
-             facet_args = list(labeller = label_parsed)) +
+mcmc_trace(x = fit_hgp,
+           regex_pars = pars_hgp,
+           facet_args = list(labeller = label_parsed)) +
   legend_none()
-ggsave(filename = "img/la-trace-hgp.pdf",
+ggsave(filename = file.path(fig_dir, "la-trace-hgp.pdf"),
        width = 6,
        height = 5)
 
-extract(fit_hgp, pars = pars_hgp,
-        permuted = FALSE) |>
-  mcmc_dens_overlay(x = _,
-                    regex_pars = pars_hgp,
-                    facet_args = list(labeller = label_parsed)) +
+mcmc_dens_overlay(x = fit_hgp,
+                  regex_pars = pars_hgp,
+                  facet_args = list(labeller = label_parsed)) +
   legend_none()
-ggsave(filename = "img/la-dens-hgp.pdf",
+ggsave(filename = file.path(fig_dir, "/la-dens-hgp.pdf"),
        width = 6,
        height = 5)
-
-xx <- as.matrix(fit_hgp, pars = pars_hgp)
 
 ##---+ Goodness-of-fit +----
 
-loo_hgp <- loo::loo(fit_hgp,
-                    ## moment_match = TRUE,
-                    save_psis = TRUE,
-                    cores = 8)
-ll_hgp <- loo::extract_log_lik(fit_hgp)
-waic_hgp <- loo::waic(ll_hgp)
-dic_hgp <- marg_dic(stan_fit = fit_hgp,
-                    y = hgp_dat$y,
-                    x = hgp_dat$X,
-                    dists = hgp_dat$dists,
-                    a = hgp_dat$A,
-                    nu = hgp_dat$nu)
-
-gof_hgp <- c("LOOIC" = loo_hgp$estimates[3, 1],
-             "WAIC" = waic_hgp$estimates[3, 1],
-             "DIC"  = dic_hgp)
+gof_hgp <- gofs[[best_model]]
 
 ##---+ Competing method +----
-
-source("code/utils/inla-summary.R")
 
 .center <- function(x)
   as.numeric(scale(x, scale = FALSE))
@@ -248,10 +238,8 @@ source("code/utils/inla-summary.R")
 
 ## inla.setOption(pardiso.license = "/opt/licenses/pardiso.lic")
 
-stations <- my_dt[grepl("^st_", my_dt$id), ] |>
-  st_transform(inlabru::fm_crs_set_lengthunit(st_crs(crs_epsg), "km"))
-dt_estim <- my_dt[!grepl("^st_", my_dt$id), ] |>
-  st_transform(inlabru::fm_crs_set_lengthunit(st_crs(crs_epsg), "km"))
+stations <- my_dt[grepl("^st_", my_dt$id), ]
+dt_estim <- my_dt[!grepl("^st_", my_dt$id), ]
 
 coop <- st_coordinates(stations)
 
@@ -266,7 +254,6 @@ spol@proj4string <- CRS()
 ya <- dt_estim$pm25
 
 coopred <- pred_regions |>
-  st_transform(inlabru::fm_crs_set_lengthunit(st_crs(crs_epsg), "km")) |>
   st_centroid() |>
   st_coordinates()
 
@@ -280,7 +267,7 @@ ypred <- rep(NA_real_, nrow(coopred))
 
 ## creating meshes
 grid <- "sparse"
-max_edge_ct <- ifelse(grid == "fine", 5, 10)
+max_edge_ct <- ifelse(grid == "fine", 5000, 10000)
 max_edge <- c(max_edge_ct,
               10 * max_edge_ct)
 cutoff <- max_edge_ct / 100
@@ -352,7 +339,7 @@ res_sparse <- inla(formula,
                    verbose = TRUE)
 
 grid <- "fine"
-max_edge_ct <- ifelse(grid == "fine", 5, 10)
+max_edge_ct <- ifelse(grid == "fine", 5000, 10000)
 max_edge <- c(max_edge_ct,
               10 * max_edge_ct)
 cutoff <- max_edge_ct / 100
@@ -423,7 +410,7 @@ res_fine <- inla(formula,
 ##         file = "~/phd/thesis/talk/meshes-la.rds")
 
 ## plotting meshes
-pdf("img/meshes.pdf",
+pdf(file.path(fig_dir, "meshes.pdf"),
     width = 4,
     height = 4 / 1.618033)
 par(mfrow = c(1, 2), mar = c(0, 0, 1, 0))
@@ -440,27 +427,27 @@ lpml_sparse <- res_sparse$cpo$cpo |>
   sum(na.rm = TRUE)
 gof_sparse <-
   c("LOOIC" = -2 * lpml_sparse,
-    "WAIC" = res_sparse$waic$waic,
-    "DIC"  = res_sparse$dic$dic)
+    "WAIC" = res_sparse$waic$waic)
 
 lpml_fine <- res_fine$cpo$cpo |>
   log() |>
   sum(na.rm = TRUE)
 gof_fine <-
   c("LOOIC" = -2 * lpml_fine,
-    "WAIC" = res_fine$waic$waic,
-    "DIC"  = res_fine$dic$dic)
+    "WAIC" = res_fine$waic$waic)
 
-gof_tbl5 <-
+## something ODD happening to AGP{2}
+gof_tbl <-
   cbind("AGP\\textsubscript{1}" = gof_sparse,
         "AGP\\textsubscript{2}" = gof_fine,
-        "HGP" = gof_hgp)
+        "HGP" = gof_hgp[-1])
 
-knitr::kable(gof_tbl5,
-             format = "latex", booktabs = TRUE,
-             digits = 1,
-             linesep = "",
-             escape = FALSE)
+gof_tbl |>
+  print() |> 
+  knitr::kable(format = "latex", booktabs = TRUE,
+               digits = 1,
+               linesep = "",
+               escape = FALSE)
 
 ##---+ out-of-sample predictions +----
 
@@ -474,7 +461,25 @@ id_fine <- inla.stack.index(
     "pred"
 )$data
 
-pred_hgp <- as.matrix(fit_hgp, pars = "y_new")
+pred_dat <- c(hgp_dat,
+              list(Xp = x_new,
+                   Ap = A_new,
+                   Np = NROW(pred_regions),
+                   distsp = pred_dists,
+                   cdists = cross_dists,
+                   nu = nus[best_model]))
+  
+pars_hgp <- c("beta", "alpha", "rho", "tau")
+
+pred_gaus <- stan_model("stan_models/gaus-pred.stan")
+
+pred_samples <- gqs(
+    pred_gaus,
+    data = pred_dat,
+    draws = as.matrix(fit_hgp, pars = pars_hgp)
+)
+
+pred_hgp <- as.matrix(pred_samples, pars = "y_rep")
 
 predictions <-
     rbind(transform(pred_regions,
@@ -551,16 +556,6 @@ p1 <-
                         guide = guide_colorbar(expression(hat(y)),
                                                title.vjust = 1,
                                                ticks = FALSE)) +
-  ## scale_fill_distiller(palette = "Spectral",
-  ##                      limits = range(my_dt$pm25),
-  ##                      guide = guide_colorbar(expression(hat(y)),
-  ##                                             title.vjust = 1,
-  ##                                             ticks = FALSE)) +
-  ## scale_color_distiller(palette = "Spectral",
-  ##                       limits = range(my_dt$pm25),
-  ##                       guide = guide_colorbar(expression(hat(y)),
-  ##                                              title.vjust = 1,
-  ##                                              ticks = FALSE)) +
   facet_wrap(~ model, labeller = label_parsed) +
   theme_bw() +
   theme(strip.background = element_rect(fill = "white",
@@ -571,7 +566,7 @@ p1 <-
         panel.grid = element_blank())
 
 
-ggsave(filename = "img/predictions_pm25.pdf",
+ggsave(filename = file.path(fig_dir, "predictions_pm25.pdf"),
        plot = p1,
        ## width = 6.5,
        ## height = 6.5 / 1.618033
@@ -585,68 +580,45 @@ ggsave(filename = "img/predictions_pm25.pdf",
 
 ##--- cov functions ----
 
-phi <- as.matrix(fit_hgp_v1, pars = "phi")
-
-evals <- 400
-dists_ev <- seq(from = 1e-16, to = max(dists) * 1.2,
-                length.out = evals)
-covs <- matrix(nrow = NROW(phi), ncol = length(dists_ev))
-
-for (i in seq_along(phi)) {
-  covs[i, ] <-
-    smile:::pexp_cov(matrix(dists_ev, nrow = 1),
-                     1, phi = phi[i],
-                     nu = hgp_dat$nu)
-}
-
-plot(x = 0, y = 0, type = "n",
-     ylim = c(0, 1),
-     xlim = c(0, max(dists_ev)),
-     ylab = expression(r(d)),
-     xlab = expression(d))
-apply(covs, 1,
-      \(x) {
-        lines(dists_ev, x, type = "l",
-              col = scales::alpha(1, .01))
-      })
-lines(dists_ev, apply(covs, 2, mean),
-      col = 2, lwd = 1.2)
-rug(dists[upper.tri(dists)],
-    col = scales::alpha(1, .1))
-abline(h = .1, col = 4, lty = 2)
-
-print(fit_hgp,
-      pars = c("beta", "alpha", "rho", "tau"))
+rho <- as.matrix(fit_hgp_v1, pars = "rho")
 
 ##--- parameter estimates ----
 
-samples_hgp <- as.matrix(fit_hgp, pars = c("beta",
-                                           "alpha",
-                                           "rho",
-                                           "tau"))
+samples_hgp <- as.matrix(fit_hgp, pars = pars_hgp)
 samples_hgp <-
   cbind(samples_hgp,
         "sigma" = exp(samples_hgp[, "alpha[1]"]),
         "sigma_ar" = exp(samples_hgp[, "alpha[1]"] + samples_hgp[, "alpha[2]"]))
 
-parest_hgp <- my_summary(samples_hgp)
+samples_hgp[, "rho"] <- samples_hgp[, "rho"] / 10
+
+parest_hgp <- posterior::summarise_draws(samples_hgp,
+                                         ~quantile(.x, probs = c(0.5, 0.025,
+                                                                 0.975)))
+
+colnames(parest_hgp) <- c("parameter", "median", "low", "upp")
+parest_hgp <-
+  transform(parest_hgp, ci = sprintf("[%.3f; %.3f]",
+                                     low, upp))
 
 ## inla sparse
+
+source("code/utils/summary_inla.R")
 
 parest_sparse <-
   res_sparse |>
   inla.spde2.result(name = "s", spde = spde_sparse) |>
   summary_parest_spde() |>
-  transform(hpd = sprintf("[%.3f; %.3f]", low, upp)) |>
+  transform(ci = sprintf("[%.3f; %.3f]", low, upp)) |>
   dplyr::select(-low, -upp)
 
 beta_sparse <-
   res_sparse$summary.fixed[, c("mean", "0.025quant", "0.975quant")] |>
   as.data.frame() |>
   dplyr::mutate(parameter = "beta", .before = mean) |>
-  dplyr::mutate(hpd = sprintf("[%.2f; %.2f]",
-                              `0.025quant`,
-                              `0.975quant`)) |>
+  dplyr::mutate(ci = sprintf("[%.2f; %.2f]",
+                             `0.025quant`,
+                             `0.975quant`)) |>
   dplyr::select(- `0.025quant`,
                 - `0.975quant`)
 
@@ -659,7 +631,7 @@ tau_sparse <-  1 / sqrt(tau_sparse)
 tau_sparse <- data.frame(
     parameter = "tau",
     mean      = mean(tau_sparse),
-    hpd       = sprintf("[%.3f; %.3f]",
+    ci        = sprintf("[%.3f; %.3f]",
                         quantile(tau_sparse,
                                  probs = .025),
                         quantile(tau_sparse,
@@ -676,14 +648,14 @@ parest_fine <-
   res_fine |>
   inla.spde2.result(name = "s", spde = spde_fine) |>
   summary_parest_spde() |>
-  transform(hpd = sprintf("[%.3f; %.3f]", low, upp)) |>
+  transform(ci = sprintf("[%.3f; %.3f]", low, upp)) |>
   dplyr::select(-low, -upp)
 
 beta_fine <-
   res_fine$summary.fixed[, c("mean", "0.025quant", "0.975quant")] |>
   as.data.frame() |>
   dplyr::mutate(parameter = "beta", .before = mean) |>
-  dplyr::mutate(hpd = sprintf("[%.3f; %.3f]",
+  dplyr::mutate(ci = sprintf("[%.3f; %.3f]",
                               `0.025quant`,
                               `0.975quant`)) |>
   dplyr::select(- `0.025quant`,
@@ -697,30 +669,32 @@ tau_fine <-  1 / sqrt(tau_fine)
 
 tau_fine <- data.frame(
     parameter = "tau",
-    mean      = mean(tau_fine),
-    hpd       = sprintf("[%.3f; %.3f]",
+    mean      = mean(tau_fine, na.rm = TRUE),
+    ci        = sprintf("[%.3f; %.3f]",
                         quantile(tau_fine,
+                                 na.rm = TRUE,
                                  probs = .025),
                         quantile(tau_fine,
+                                 na.rm = TRUE,
                                  probs = .975))
 )
 
 parest_fine <- rbind(beta_fine, parest_fine,
-                       tau_fine) |>
+                     tau_fine) |>
   dplyr::rename("expected" = "mean")
 
 ## gathering results
 
 parest_fine <- parest_fine |>
-  dplyr::mutate(hpd = gsub("\\[", "\\(", hpd)) |>
-  dplyr::mutate(hpd = gsub("\\]", "\\)", hpd))
+  dplyr::mutate(ci = gsub("\\[", "\\(", ci)) |>
+  dplyr::mutate(ci = gsub("\\]", "\\)", ci))
 parest_sparse <- parest_sparse |>
-  dplyr::mutate(hpd = gsub("\\[", "\\(", hpd)) |>
-  dplyr::mutate(hpd = gsub("\\]", "\\)", hpd))
+  dplyr::mutate(ci = gsub("\\[", "\\(", ci)) |>
+  dplyr::mutate(ci = gsub("\\]", "\\)", ci))
 final <-
   parest_hgp |>
-  dplyr::mutate(hpd = gsub("\\[", "\\(", hpd)) |>
-  dplyr::mutate(hpd = gsub("\\]", "\\)", hpd)) |>
+  dplyr::mutate(ci = gsub("\\[", "\\(", ci)) |>
+  dplyr::mutate(ci = gsub("\\]", "\\)", ci)) |>
   dplyr::filter(!grepl("alpha", parameter)) |>
   dplyr::mutate(parameter = stringr::str_extract(parameter,
                                                  "\\w*"))
@@ -728,51 +702,61 @@ final <-
 ##--- Table 7 ----
 
 final <-
-  merge(parest_sparse,
-        parest_fine, by = "parameter") |>
-  merge(final, by = "parameter", all = TRUE) |>
+  final |>
+  dplyr::select(-low, -upp) |>
+  merge(parest_sparse, by = "parameter",
+        all.x = TRUE) |>
+  merge(parest_fine, by = "parameter",
+        all.x = TRUE) |>
   dplyr::mutate(parameter = sprintf("$\\%s$", parameter))
 
-knitr::kable(final,
-             format = "latex",
-             booktabs = TRUE,
-             escape = FALSE,
-             digits = 3,
-             linesep = "")
+##--- table 3 ----
+
+final |>
+  print(digits = 3) |>
+  knitr::kable(format = "latex",
+               booktabs = TRUE,
+               escape = FALSE,
+               digits = 3,
+               linesep = "")
+
+cv_results <- rbind(readRDS("data/pm25/cluster/cv-hgp.rds"),
+                    readRDS("data/pm25/cluster/cv-inla.rds"))
+
+model_lookup <-
+  data.frame(model_id = 1:10) |>
+  transform(vart = ifelse(model_id %% 2 == 0, "Het", "Hom"),
+            family = c(rep("Gaussian-centroid", 2),
+                       rep("Gaussian-HGP", 2),
+                       rep("Gamma", 2),
+                       rep("Log-Normal", 2),
+                       "AGP1", "AGP2"))
+
+cv_results |>
+  left_join(model_lookup, by = "model_id") |>
+  filter(grepl("HGP|AGP", family)) |>
+  mutate(vart = ifelse(grepl("AGP", family), "Het", vart)) |>
+  filter(vart == "Het") |>
+  mutate(family = ifelse(grepl("HGP", family), "HGP", family)) |>
+  ## filter(model_id %% 2 == 0) |>
+  mutate(bias = median_prd - obs,
+         is   = int_score(y = obs, l = lower, u = upper,
+                          alpha = .05),
+         cvg = between(obs, lower, upper)) |>
+  group_by(family, k) |>
+  summarise(bias = mean(bias),
+            rmse = 10 * sqrt(mean(bias * bias)),
+            is   = mean(is),
+            cvg  = 100 * mean(cvg)) |>
+  ungroup() |>
+  group_by(family) |>
+  summarise(across(where(is.numeric), mean)) |>
+  ungroup() |>
+  arrange(family) |>
+  print(digis = 3) 
 
 ##--- prior vs posterior: rho ----
 
-## bins_sturges <-
-##   function(x) diff(range(x)) / nclass.Sturges(x)
-
-## ns <- 2000
-
-## rho <- as.matrix(fit_hgp, pars = "rho") |>
-##   as.numeric()
-
-## rho_sparse <-
-##   res_sparse |>
-##   inla.spde2.result(name = "s", spde = spde_sparse)
-## rho_sparse <-
-##   as.data.frame(rho_sparse$marginals.range.nominal)
-## colnames(rho_sparse) <- c("x", "y")
-
-## rho_fine <-
-##   res_fine |>
-##   inla.spde2.result(name = "s", spde = spde_fine)
-## rho_fine <-
-##   as.data.frame(rho_fine$marginals.range.nominal)
-## colnames(rho_fine) <- c("x", "y")
-
-## colors <- c("#ffd166", "#ef476f",
-##             "#26547c")
-
-## ggplot() +
-##   geom_area(data = rho_fine,
-##             mapping = aes(x = x,
-##                           y = y * 3800),
-##             fill = colors[1],
-##             color = "transparent",
 ##             alpha = .5,
 ##             lwd = 1.1) +
 ##   geom_area(data = rho_sparse,

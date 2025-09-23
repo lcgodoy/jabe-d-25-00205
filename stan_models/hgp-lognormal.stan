@@ -14,7 +14,6 @@ data {
   real<lower=0> rho_0;
   matrix[N, k2] A;
   real<lower = 0, upper = 1> nu;
-  int<lower = 0, upper = 1> ln;
 }
 transformed data {
   real par_exp = - log(prob_rho) / rho_0;
@@ -33,13 +32,8 @@ model {
   {
     vector[N] lmu;
     lmu = exp(X * beta + z);
-    if (ln) {
-      for (i in 1:N)
-        target += ln_mu_lpdf(y[i] | lmu[i], tau);
-    } else {
-      for (i in 1:N)
-        target += gamma_mu_lpdf(y[i] | lmu[i], tau);
-    }
+    for (i in 1:N)
+      target += ln_mu_lpdf(y[i] | lmu[i], tau);
   }
   target += gp_heter_lpdf(z | dists, A, alpha, rho, nu, 0.0);
   target += exponential_lpdf(rho | par_exp);

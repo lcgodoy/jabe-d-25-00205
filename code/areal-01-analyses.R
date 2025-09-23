@@ -134,9 +134,9 @@ dagar <- stan_model(file = "stan_models/areal/dagar.stan")
 
 ##---++ HGP ++----
 
-n_iter <- 1000L
+n_iter <- 5000L
 burn <- 1000L
-thin <- 1
+thin <- 10
 
 fit_hgp <- sampling(
     object = hgp,

@@ -52,4 +52,10 @@ cv_results |>
   group_by(vart, family) |>
   summarise(across(where(is.numeric), mean)) |>
   ungroup() |>
-  arrange(rmse)
+  arrange(rmse) |>
+  mutate(rmse = 10 * rmse) |>
+  select(- k, - bias) |>
+    knitr::kable(format = "latex",
+                 booktabs = TRUE,
+                 linesep = "",
+                 digits = 3)
