@@ -12,6 +12,7 @@ rstan_options(auto_write = TRUE)
 
 set.seed(2024)
 
+## replace the following with the path where you'd like to have the figures
 fig_dir <- "~/git-projects/hausdorff-GP/img"
 
 ##--- auxiliary functions ----
