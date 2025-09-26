@@ -22,7 +22,7 @@ model_lookup <-
 
 cv_results |>
   left_join(model_lookup, by = "model_id") |>
-  ## filter(model_id %% 2 == 0) |>
+  filter(family != "Gamma") |>
   mutate(bias = median_prd - obs,
          is   = int_score(y = obs, l = lower, u = upper,
                           alpha = .05),
@@ -38,6 +38,8 @@ cv_results |>
 
 cv_results |>
   left_join(model_lookup, by = "model_id") |>
+  ## gamma did not converge, probably need the priors to be tweaked
+  filter(family != "Gamma") |>
   ## filter(model_id %% 2 == 0) |>
   mutate(bias = median_prd - obs,
          is   = int_score(y = obs, l = lower, u = upper,
