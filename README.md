@@ -124,7 +124,7 @@ The data for the PM2.5 application is located in `/data/pm25`.
 
 ---
 
-## 🚀 How to Reproduce
+## How to Reproduce
 
 Ensure you have a working installation of `R`, with (at least) the packages
 `rstan`, `sf`, `spdep`, `dplyr`, and `ggplot2` installed. A `C++` compiler is
