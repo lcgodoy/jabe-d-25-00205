@@ -2,7 +2,6 @@ functions {
 #include utils/pois_rng_safe.stan
 #include utils/pexp_corr.stan
 #include utils/gp_lpdf.stan
-#include utils/pcp_iid.stan
 }
 data {
   int<lower = 1> N;
