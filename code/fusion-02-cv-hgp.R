@@ -7,9 +7,6 @@ library(rstan)
 
 source("utils/cv-task-funs.R")
 
-##---+ Configuration ----
-## Define all parameters here instead of in the bash script
-
 if (interactive()) {
   kf <- 10
   samples <- 50
@@ -32,21 +29,20 @@ if (interactive()) {
     as.integer()
 }
 
-
-## Cross-validation and Model parameters
+## cross-validation and model parameters
 models <- if (.debug == 1) c(1, 6) else 1:8
 
 ntasks <- Sys.getenv("SLURM_NTASKS")
 ntasks <- ifelse(ntasks == "", 2, as.integer(ntasks))
 
-##---+ Data Loading ----
+##--- load data ----
 
 xy 	<- readRDS("data/pm25/cluster/xy.rds")
 W  	<- readRDS("data/pm25/cluster/W.rds")
 dists_ct <- readRDS("data/pm25/cluster/ct_mat.rds") / 10 ## in 10s of km
 dists_h  <- readRDS("data/pm25/cluster/hmat.rds") / 10  ## in 10s of km
 
-##---+ Pre-compile Stan Models ----
+##--- compile stan models ----
 stan_models <- list(
   hgp_gaus = stan_model("stan_models/hgp-gaussian.stan"),
   hgp_ln = stan_model("stan_models/hgp-lognormal.stan"),
@@ -54,13 +50,10 @@ stan_models <- list(
   pred_ln = stan_model("stan_models/ln-pred.stan")
 )
 
-##---+ Execution ----
+##--- execution ----
 
-## Create a grid of all parameter combinations
 seq_k <- if(.debug) 1:2 else 1:kf
 task_grid <- expand.grid(ki = 1:kf, mod = models)
-
-## Convert grid to a list of parameters for mclapply
 tasks <- split(task_grid, seq(nrow(task_grid)))
 
 results <- mclapply(tasks,
