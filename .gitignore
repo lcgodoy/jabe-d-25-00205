@@ -33,5 +33,5 @@ data/processed.csv
 ## stan compiled models
 stan/*.rds
 
-## emacs temperary files
+## emacs temporary files
 *~
