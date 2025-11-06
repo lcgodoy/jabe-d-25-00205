@@ -139,7 +139,7 @@ code is executed.
 ## Acknowledgments
 
 * The `dagar.stan` model in `/stan_models/areal` is an adaptation of `Stan` code
-  kindly provided by Dr. Abhi Datta.
+  kindly provided by [Dr. Abhi Datta](http://abhidatta.com/).
 
 ---
 
