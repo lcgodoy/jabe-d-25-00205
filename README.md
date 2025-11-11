@@ -22,6 +22,8 @@ Statistics (JABES)
 
 * `run-cv.sh`: A shell script for executing the cross-validation analysis.
 
+* `supplement.pdf`: The Supplementary Material for the paper.
+
 > **Note:** Scripts prefixed with `*-00-*` are primarily for data pre-processing
 > and supplemental checks. They are provided for completeness, but the main
 > analyses are contained in the `*-01-*` (and higher) scripts.
