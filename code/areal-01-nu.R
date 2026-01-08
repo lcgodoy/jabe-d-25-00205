@@ -7,7 +7,6 @@ rstan_options(auto_write = TRUE)
 
 source("code/utils/aux_icar.R")
 source("code/utils/aux_dagar.R")
-source("code/utils/process-chains.R")
 
 ## beta > 2 * x
 alpha_given_beta_mode <- function(.beta, x) {
